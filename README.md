@@ -10,8 +10,8 @@ This repository demonstrates security enhancements made to OWASP Juice Shop, foc
 ## Installation
 1. Clone the repository:
     ```bash
-    git clone https://github.com/your-username/juice-shop-security.git
-    cd juice-shop-security
+    git clone https://github.com/arslanenginner/Internship-Work.git
+    cd Internship-Work
     ```
 2. Install dependencies:
     ```bash
