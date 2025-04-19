@@ -4,7 +4,8 @@
  */
 
 /* jslint node: true */
-import config from 'config'
+import bcrypt from 'bcrypt';
+import config from 'config';
 import {
   type InferAttributes,
   type InferCreationAttributes,
@@ -12,31 +13,32 @@ import {
   DataTypes,
   type CreationOptional,
   type Sequelize
-} from 'sequelize'
-import * as challengeUtils from '../lib/challengeUtils'
-import * as utils from '../lib/utils'
-import { challenges } from '../data/datacache'
-import * as security from '../lib/insecurity'
+} from 'sequelize';
+import * as challengeUtils from '../lib/challengeUtils';
+import * as utils from '../lib/utils';
+import { challenges } from '../data/datacache';
+import * as security from '../lib/insecurity';
 
 class User extends Model<
-InferAttributes<User>,
-InferCreationAttributes<User>
+  InferAttributes<User>,
+  InferCreationAttributes<User>
 > {
-  declare id: CreationOptional<number>
-  declare username: string | undefined
-  declare email: CreationOptional<string>
-  declare password: CreationOptional<string>
-  declare role: CreationOptional<string>
-  declare deluxeToken: CreationOptional<string>
-  declare lastLoginIp: CreationOptional<string>
-  declare profileImage: CreationOptional<string>
-  declare totpSecret: CreationOptional<string>
-  declare isActive: CreationOptional<boolean>
+  declare id: CreationOptional<number>;
+  declare username: string | undefined;
+  declare email: CreationOptional<string>;
+  declare password: CreationOptional<string>;
+  declare role: CreationOptional<string>;
+  declare deluxeToken: CreationOptional<string>;
+  declare lastLoginIp: CreationOptional<string>;
+  declare profileImage: CreationOptional<string>;
+  declare totpSecret: CreationOptional<string>;
+  declare isActive: CreationOptional<boolean>;
 }
 
-const UserModelInit = (sequelize: Sequelize) => { // vuln-code-snippet start weakPasswordChallenge
+const UserModelInit = (sequelize: Sequelize) => {
+  // Initialize the User model with Sequelize
   User.init(
-    { // vuln-code-snippet hide-start
+    {
       id: {
         type: DataTypes.INTEGER,
         primaryKey: true,
@@ -45,57 +47,56 @@ const UserModelInit = (sequelize: Sequelize) => { // vuln-code-snippet start wea
       username: {
         type: DataTypes.STRING,
         defaultValue: '',
-        set (username: string) {
+        set(username: string) {
           if (utils.isChallengeEnabled(challenges.persistedXssUserChallenge)) {
-            username = security.sanitizeLegacy(username)
+            username = security.sanitizeLegacy(username);
           } else {
-            username = security.sanitizeSecure(username)
+            username = security.sanitizeSecure(username);
           }
-          this.setDataValue('username', username)
+          this.setDataValue('username', username);
         }
       },
       email: {
         type: DataTypes.STRING,
         unique: true,
-        set (email: string) {
+        set(email: string) {
           if (utils.isChallengeEnabled(challenges.persistedXssUserChallenge)) {
             challengeUtils.solveIf(challenges.persistedXssUserChallenge, () => {
               return utils.contains(
                 email,
                 '<iframe src="javascript:alert(`xss`)">'
-              )
-            })
+              );
+            });
           } else {
-            email = security.sanitizeSecure(email)
+            email = security.sanitizeSecure(email);
           }
-          this.setDataValue('email', email)
+          this.setDataValue('email', email);
         }
-      }, // vuln-code-snippet hide-end
+      },
       password: {
         type: DataTypes.STRING,
-        set (clearTextPassword: string) {
-          this.setDataValue('password', security.hash(clearTextPassword)) // vuln-code-snippet vuln-line weakPasswordChallenge
-        }
-      }, // vuln-code-snippet end weakPasswordChallenge
+        allowNull: false,
+        // No need to manually hash in set method anymore
+      },
       role: {
         type: DataTypes.STRING,
         defaultValue: 'customer',
         validate: {
           isIn: [['customer', 'deluxe', 'accounting', 'admin']]
         },
-        set (role: string) {
-          const profileImage = this.getDataValue('profileImage')
+        set(role: string) {
+          const profileImage = this.getDataValue('profileImage');
           if (
             role === security.roles.admin &&
-          (!profileImage ||
-            profileImage === '/assets/public/images/uploads/default.svg')
+            (!profileImage ||
+              profileImage === '/assets/public/images/uploads/default.svg')
           ) {
             this.setDataValue(
               'profileImage',
               '/assets/public/images/uploads/defaultAdmin.png'
-            )
+            );
           }
-          this.setDataValue('role', role)
+          this.setDataValue('role', role);
         }
       },
       deluxeToken: {
@@ -124,21 +125,39 @@ const UserModelInit = (sequelize: Sequelize) => { // vuln-code-snippet start wea
       paranoid: true,
       sequelize
     }
-  )
+  );
 
+  // Hash password before saving (for both creation and updates)
+  User.addHook('beforeCreate', async (user: User) => {
+    if (user.password) {
+      user.password = await bcrypt.hash(user.password, 10); // Hash the password before saving
+    }
+  });
+
+  User.addHook('beforeUpdate', async (user: User) => {
+    if (user.changed('password')) {
+      user.password = await bcrypt.hash(user.password, 10); // Hash password if it's changed
+    }
+  });
+
+  // Prevent using specific email (challenge)
   User.addHook('afterValidate', async (user: User) => {
     if (
       user.email &&
-    user.email.toLowerCase() ===
-      `acc0unt4nt@${config.get<string>('application.domain')}`.toLowerCase()
+      user.email.toLowerCase() ===
+        `acc0unt4nt@${config.get<string>('application.domain')}`.toLowerCase()
     ) {
       await Promise.reject(
         new Error(
           'Nice try, but this is not how the "Ephemeral Accountant" challenge works!'
         )
-      )
+      );
     }
-  })
-}
+  });
+};
+
+// Export the model and initialization function
+export { User as UserModel, UserModelInit };
+
 
 export { User as UserModel, UserModelInit }
