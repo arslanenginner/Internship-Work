@@ -3,15 +3,25 @@
  * SPDX-License-Identifier: MIT
  */
 
-async function app () {
-  const { default: validateDependencies } = await import('./lib/startup/validateDependenciesBasic')
-  await validateDependencies()
+import helmet from 'helmet';
 
-  const server = await import('./server')
-  await server.start()
+async function app () {
+  const { default: validateDependencies } = await import('./lib/startup/validateDependenciesBasic');
+  await validateDependencies();
+
+  const server = await import('./server');
+  const expressApp = await server.start();
+
+  // Use helmet middleware to secure HTTP headers
+  expressApp.use(helmet());
+
+  // You can configure Helmet's default settings here if needed, like:
+  // expressApp.use(helmet({ contentSecurityPolicy: false }));
+
 }
 
 app()
   .catch(err => {
-    throw err
-  })
+    throw err;
+  });
+
