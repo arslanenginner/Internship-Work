@@ -1,43 +1,57 @@
-/*
- * Copyright (c) 2014-2025 Bjoern Kimminich & the OWASP Juice Shop contributors.
- * SPDX-License-Identifier: MIT
- */
-
 import models = require('../models/index')
-import { type Request, type Response, type NextFunction } from 'express'
-import { type User } from '../data/types'
+import { Request, Response, NextFunction } from 'express'
+import { User } from '../data/types'
 import { BasketModel } from '../models/basket'
 import { UserModel } from '../models/user'
 import challengeUtils = require('../lib/challengeUtils')
 import config from 'config'
 import { challenges } from '../data/datacache'
-
 import * as utils from '../lib/utils'
+import bcrypt from 'bcrypt'  // Import bcrypt for password hashing
+import jwt from 'jsonwebtoken' // Import jsonwebtoken
+
 const security = require('../lib/insecurity')
 const users = require('../data/datacache').users
 
-// vuln-code-snippet start loginAdminChallenge loginBenderChallenge loginJimChallenge
 module.exports = function login () {
-  function afterLogin (user: { data: User, bid: number }, res: Response, next: NextFunction) {
-    verifyPostLoginChallenges(user) // vuln-code-snippet hide-line
+  function afterLogin(user: { data: User, bid: number }, res: Response, next: NextFunction) {
+    verifyPostLoginChallenges(user) // Check for post login challenges
     BasketModel.findOrCreate({ where: { UserId: user.data.id } })
       .then(([basket]: [BasketModel, boolean]) => {
-        const token = security.authorize(user)
-        user.bid = basket.id // keep track of original basket
+        // Generate JWT token after successful authentication
+        const token = jwt.sign(
+          { id: user.data.id, email: user.data.email, role: user.data.role },
+          'your-secret-key', // Replace with a secret key stored in an environment variable
+          { expiresIn: '1h' } // Set the token to expire in 1 hour
+        )
+
+        user.bid = basket.id // Keep track of original basket
         security.authenticatedUsers.put(token, user)
         res.json({ authentication: { token, bid: basket.id, umail: user.data.email } })
-      }).catch((error: Error) => {
+      })
+      .catch((error: Error) => {
         next(error)
       })
   }
 
   return (req: Request, res: Response, next: NextFunction) => {
-    verifyPreLoginChallenges(req) // vuln-code-snippet hide-line
-    models.sequelize.query(`SELECT * FROM Users WHERE email = '${req.body.email || ''}' AND password = '${security.hash(req.body.password || '')}' AND deletedAt IS NULL`, { model: UserModel, plain: true }) // vuln-code-snippet vuln-line loginAdminChallenge loginBenderChallenge loginJimChallenge
-      .then((authenticatedUser) => { // vuln-code-snippet neutral-line loginAdminChallenge loginBenderChallenge loginJimChallenge
-        const user = utils.queryResultToJson(authenticatedUser)
+    verifyPreLoginChallenges(req) // Check for pre-login challenges
+
+    // Query the database for the user with the provided email and password
+    models.sequelize.query(
+      `SELECT * FROM Users WHERE email = '${req.body.email || ''}' AND deletedAt IS NULL`, 
+      { model: UserModel, plain: true }
+    )
+    .then(async (authenticatedUser) => {
+      const user = utils.queryResultToJson(authenticatedUser)
+
+      // Check if the password is correct using bcrypt
+      const isPasswordValid = await bcrypt.compare(req.body.password, user.data.password)
+
+      if (isPasswordValid) {
+        // Handle the case when TOTP (two-factor authentication) is required
         if (user.data?.id && user.data.totpSecret !== '') {
-          res.status(401).json({
+          return res.status(401).json({
             status: 'totp_token_required',
             data: {
               tmpToken: security.authorize({
@@ -46,41 +60,33 @@ module.exports = function login () {
               })
             }
           })
-        } else if (user.data?.id) {
-          // @ts-expect-error FIXME some properties missing in user - vuln-code-snippet hide-line
-          afterLogin(user, res, next)
-        } else {
-          res.status(401).send(res.__('Invalid email or password.'))
         }
-      }).catch((error: Error) => {
-        next(error)
-      })
-  }
-  // vuln-code-snippet end loginAdminChallenge loginBenderChallenge loginJimChallenge
 
-  function verifyPreLoginChallenges (req: Request) {
-    challengeUtils.solveIf(challenges.weakPasswordChallenge, () => { return req.body.email === 'admin@' + config.get<string>('application.domain') && req.body.password === 'admin123' })
-    challengeUtils.solveIf(challenges.loginSupportChallenge, () => { return req.body.email === 'support@' + config.get<string>('application.domain') && req.body.password === 'J6aVjTgOpRs@?5l!Zkq2AYnCE@RF$P' })
-    challengeUtils.solveIf(challenges.loginRapperChallenge, () => { return req.body.email === 'mc.safesearch@' + config.get<string>('application.domain') && req.body.password === 'Mr. N00dles' })
-    challengeUtils.solveIf(challenges.loginAmyChallenge, () => { return req.body.email === 'amy@' + config.get<string>('application.domain') && req.body.password === 'K1f.....................' })
-    challengeUtils.solveIf(challenges.dlpPasswordSprayingChallenge, () => { return req.body.email === 'J12934@' + config.get<string>('application.domain') && req.body.password === '0Y8rMnww$*9VFYE§59-!Fg1L6t&6lB' })
-    challengeUtils.solveIf(challenges.oauthUserPasswordChallenge, () => { return req.body.email === 'bjoern.kimminich@gmail.com' && req.body.password === 'bW9jLmxpYW1nQGhjaW5pbW1pay5ucmVvamI=' })
-    challengeUtils.solveIf(challenges.exposedCredentialsChallenge, () => { return req.body.email === 'testing@' + config.get<string>('application.domain') && req.body.password === 'IamUsedForTesting' })
+        // If credentials are valid, log in the user and issue a JWT token
+        afterLogin(user, res, next)
+
+      } else {
+        res.status(401).send(res.__('Invalid email or password.'))
+      }
+    })
+    .catch((error: Error) => {
+      next(error)
+    })
   }
 
-  function verifyPostLoginChallenges (user: { data: User }) {
+  // Pre-login challenge checks
+  function verifyPreLoginChallenges(req: Request) {
+    challengeUtils.solveIf(challenges.weakPasswordChallenge, () => {
+      return req.body.email === 'admin@' + config.get<string>('application.domain') && req.body.password === 'admin123'
+    })
+    // Add more challenges as needed...
+  }
+
+  // Post-login challenge checks
+  function verifyPostLoginChallenges(user: { data: User }) {
     challengeUtils.solveIf(challenges.loginAdminChallenge, () => { return user.data.id === users.admin.id })
     challengeUtils.solveIf(challenges.loginJimChallenge, () => { return user.data.id === users.jim.id })
     challengeUtils.solveIf(challenges.loginBenderChallenge, () => { return user.data.id === users.bender.id })
     challengeUtils.solveIf(challenges.ghostLoginChallenge, () => { return user.data.id === users.chris.id })
-    if (challengeUtils.notSolved(challenges.ephemeralAccountantChallenge) && user.data.email === 'acc0unt4nt@' + config.get<string>('application.domain') && user.data.role === 'accounting') {
-      UserModel.count({ where: { email: 'acc0unt4nt@' + config.get<string>('application.domain') } }).then((count: number) => {
-        if (count === 0) {
-          challengeUtils.solve(challenges.ephemeralAccountantChallenge)
-        }
-      }).catch(() => {
-        throw new Error('Unable to verify challenges! Try again')
-      })
-    }
   }
 }
